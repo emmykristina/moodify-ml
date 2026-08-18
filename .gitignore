@@ -12,6 +12,7 @@ __pycache__/
 .vscode/
 
 # Data
+data/raw/
 data/processed/
 
 # Models
