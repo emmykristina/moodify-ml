@@ -78,7 +78,11 @@ if "recommended_mood" not in st.session_state:
 if submitted:
     label = label_map[mood]
 
-    matching_songs = df[df["labels"] == label]
+    matching_songs = df[
+        (df["labels"] == label) &
+        (df["speechiness"] < 0.66) &
+        (df["duration (ms)"] < 600000)
+    ]
 
     candidates = matching_songs.sample(
         n=min(20, len(matching_songs))
