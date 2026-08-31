@@ -6,4 +6,7 @@ scipy==1.17.1
 scikit-learn==1.8.0
 xgboost==3.4.1
 tensorflow==2.21.0
-ipykernel==7.2.0
+ipykernel==7.2.0streamlit==1.62.0
+streamlit==1.62.0
+python-dotenv==1.2.3
+requests==2.34.2
