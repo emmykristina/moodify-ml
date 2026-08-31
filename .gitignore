@@ -16,7 +16,7 @@ data/raw/
 data/processed/
 
 # Models
-models/
+/models/
 
 # Environment variables
 .env
