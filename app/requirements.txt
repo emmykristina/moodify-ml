@@ -1,5 +1,6 @@
 streamlit
 pandas
 xgboost==3.4.1
+scikit-learn
 requests
 python-dotenv
