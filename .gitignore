@@ -12,11 +12,9 @@ __pycache__/
 .vscode/
 
 # Data
-data/raw/
+data/raw/*
+!data/raw/278k_labelled_uri.csv
 data/processed/
-
-# Models
-/models/
 
 # Environment variables
 .env

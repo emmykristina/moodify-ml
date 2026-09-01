@@ -46,7 +46,7 @@ These interface categories are mapped to the original dataset labels:
 
 The names **Melancholic** and **Upbeat** are used in the application because they better describe musical characteristics without implying that a song itself is objectively sad or happy.
 
-The app randomly selects five tracks from the chosen category and uses the **Spotify Web API** to retrieve artist and track information.
+The application loads the trained XGBoost model and uses the audio features of each track to predict its emotion class. Tracks matching the user's selected mood are then used as candidates for the recommendations.
 
 Spotify previews are displayed directly in the application, and starting a new preview automatically pauses the previous one.
 
@@ -100,22 +100,22 @@ pip install -r requirements.txt
 
 ## Dataset Setup
 
-The datasets are not included in the repository.
+---
 
-Download the **278k Emotion Labeled Spotify Songs** dataset from Kaggle and place the CSV files inside:
+## Dataset Setup
 
-```text
-data/raw/
-```
+The original dataset is the **278k Emotion Labeled Spotify Songs** dataset from Kaggle.
 
-The project uses:
+The project uses two dataset files:
 
 ```text
 278k_song_labelled.csv
 278k_labelled_uri.csv
 ```
 
-The first file is used for the machine learning analysis, while the URI version is used by the Streamlit application to connect recommendations to Spotify tracks.
+`278k_song_labelled.csv` is used for the machine learning analysis and is not included in the repository.
+
+`278k_labelled_uri.csv` contains the Spotify track identifiers and audio features required by the Streamlit application. This file is included in the repository so that the deployed application can generate model predictions and connect recommendations to Spotify.
 
 ---
 
@@ -139,7 +139,7 @@ The `.env` file is excluded through `.gitignore` and should never be committed t
 Start the Streamlit application with:
 
 ```bash
-streamlit run app.py
+streamlit run app/app.py
 ```
 
 Select a musical mood and click **Recommend songs** to receive five Spotify recommendations.
@@ -151,16 +151,22 @@ Select a musical mood and click **Recommend songs** to receive five Spotify reco
 ```text
 moodify-ml/
 │
-├── app.py
-├── README.md
-├── requirements.txt
+├── app/
+│   └── app.py
+│
+├── assets/
+│   └── moodify_logo_transparent.png
 │
 ├── data/
 │   ├── raw/
+│   │   └── 278k_labelled_uri.csv
 │   └── processed/
 │
 ├── docs/
 │   └── analysis.md
+│
+├── models/
+│   └── xgboost_model.json
 │
 ├── notebooks/
 │   ├── 01_data_understanding.ipynb
@@ -172,13 +178,9 @@ moodify-ml/
 ├── reports/
 │   └── models/
 │
-├── models/
-│
-└── src/
-    └── moodify_ml/
+├── README.md
+└── requirements.txt
 ```
-
-Raw and processed datasets are excluded from Git.
 
 ---
 
