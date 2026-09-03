@@ -122,23 +122,48 @@ st.set_page_config(
 
 # On narrow (mobile) screens, st.columns stacks the logo/title vertically
 # by default and the logo fills the whole screen width. Below the mobile
-# breakpoint we: cap the logo size, force the columns to stay side by side
-# (row instead of stacked), and shrink the title so "M O O D I F Y" still
-# fits next to it on one line. None of this applies above 640px, so the
-# desktop layout is untouched.
+# breakpoint we: give the logo a fixed-size column so it can't overflow
+# into the gap next to it, shrink the title so "M O O D I F Y" still fits
+# beside it, break the subtitle onto two shorter lines, and lay the mood
+# choices out as a 2x2 grid instead of an uneven wrap. None of this
+# applies above 640px, so the desktop layout is untouched.
 st.markdown(
     """
     <style>
     @media (max-width: 640px) {
-        [data-testid="stImage"] img {
-            max-width: 110px !important;
+        /* Streamlit forces each column's min-width to ~100% on narrow
+           screens (to stack them) — zero it so columns can sit side by
+           side at their intended size instead. */
+        [data-testid="stColumn"] {
+            min-width: 0 !important;
         }
-        [data-testid="stHorizontalBlock"] {
-            flex-direction: row !important;
-            flex-wrap: nowrap !important;
+        /* Give the logo column a fixed box so the image (capped below)
+           can't overflow past it into the gap — that overflow was what
+           made the logo and title look glued together with no space
+           between them. */
+        [data-testid="stColumn"]:first-of-type {
+            flex: 0 0 110px !important;
+        }
+        [data-testid="stImage"] img {
+            max-width: 100% !important;
         }
         h1 {
             font-size: 1.5rem !important;
+        }
+        /* Bring the title a bit closer to the logo (default gap is 16px). */
+        [data-testid="stHorizontalBlock"] {
+            column-gap: 4px !important;
+        }
+        /* Force the subtitle onto two shorter lines instead of one long
+           one that spans the whole width. */
+        .mobile-break {
+            display: block;
+        }
+        /* The mood radio options default to wrapping wherever they run
+           out of width (3 then 1), which looks uneven. Force exactly two
+           per row instead. */
+        [data-testid="stRadioOption"] {
+            flex: 0 0 calc(50% - 8px) !important;
         }
     }
     </style>
@@ -160,7 +185,11 @@ with logo_col:
 with title_col:
     st.title("M O O D I F Y")
 
-st.write("Choose your mood and get Spotify recommendations.")
+st.markdown(
+    'Choose your mood and era <span class="mobile-break">to get Spotify '
+    'recommendations.</span>',
+    unsafe_allow_html=True
+)
 
 df = load_data_with_predictions()
 
@@ -433,7 +462,12 @@ if st.session_state.recommendations is not None:
 
         components.html(
             html,
-            height=len(tracks) * 115
+            # Budget extra room per track: on narrow screens the artist -
+            # title label frequently wraps to two lines, which the tighter
+            # single-line estimate used to cut off. scrolling=True is a
+            # safety net in case a label wraps to more than two lines.
+            height=len(tracks) * 140,
+            scrolling=True
         )
 
     else:
