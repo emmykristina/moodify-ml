@@ -53,12 +53,16 @@ def get_spotify_token():
     return response.json()["access_token"]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@st.cache_data(ttl=82800, show_spinner=False)  # ~23h: track metadata barely
+# changes, and a long cache is what keeps repeat testing/usage from re-hitting
+# Spotify’s daily Development Mode quota (a separate, much stricter limit than
+# the per-30-second rate limit — see the 2026-07-23 Spotify API quota changes).
 def get_track_info(track_id, token):
-    """Look up a single track. Cached so that the same track isn't looked
-    up again for the rest of the hour — this is what actually keeps the
-    number of Spotify requests down, without depending on the multi-id
-    batch endpoint (which returned 403 for this app)."""
+    """Look up a single track. Cached for ~23h so that the same track
+    isn't looked up again for almost a full day — this is what actually
+    keeps the number of Spotify requests down, without depending on the
+    multi-id batch endpoint (removed for Development Mode apps, which is
+    why it returned 403 for this app)."""
 
     response = requests.get(
         f"https://api.spotify.com/v1/tracks/{track_id}",
@@ -233,17 +237,19 @@ class SpotifyRateLimited(Exception):
         super().__init__(f"Spotify rate limited, retry after {retry_after}s")
 
 
-@st.cache_data(ttl=3600, show_spinner="Finding recommendations...")
+@st.cache_data(ttl=82800, show_spinner="Finding recommendations...")  # ~23h,
+# same reasoning as get_track_info above: protects against the daily quota,
+# not just the short rate limit.
 def find_recommendations(label, year_range):
     """Find up to 5 recommended tracks for a given mood label + era, and
-    cache the whole result for an hour.
+    cache the whole result for ~23h.
 
     This is the main defense against rate limiting when the app is shared:
     without it, every single click on "Recommend songs" — even for a mood/
     era combo someone already searched a minute ago — would draw a fresh
     random sample and re-check it against Spotify from scratch. With only
     ~28 possible mood/era combinations total, caching the full result per
-    combination means Spotify only gets hit once per combination per hour,
+    combination means Spotify only gets hit once per combination per ~23h,
     no matter how many people click around in the meantime.
     """
     max_checks = MAX_CHECKS_WITH_ERA if year_range is not None else MAX_CHECKS
