@@ -1,6 +1,7 @@
-streamlit
-pandas
+streamlit==1.62.0
+pandas==3.0.3
+numpy==2.4.6
 xgboost==3.4.1
-scikit-learn
-requests
-python-dotenv
+scikit-learn==1.8.0
+requests==2.34.2
+python-dotenv==1.2.3

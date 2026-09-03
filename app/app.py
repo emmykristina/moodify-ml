@@ -9,10 +9,35 @@ from xgboost import XGBClassifier
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__))) # path oberoende av vartifrån programmet startas
 
-load_dotenv()
+load_dotenv(override=True)
 
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+def get_secret(key):
+    """Read a credential from the environment (.env locally) or from
+    Streamlit's secrets store (used on Community Cloud, where .env files
+    don't exist)."""
+    value = os.getenv(key)
+
+    if value:
+        return value
+
+    try:
+        return st.secrets.get(key)
+    except Exception:
+        return None
+
+
+SPOTIFY_CLIENT_ID = get_secret("SPOTIFY_CLIENT_ID")
+SPOTIFY_CLIENT_SECRET = get_secret("SPOTIFY_CLIENT_SECRET")
+
+print(
+    "[moodify debug] using SPOTIFY_CLIENT_ID ending in ..."
+    + (SPOTIFY_CLIENT_ID[-4:] if SPOTIFY_CLIENT_ID else "MISSING")
+)
+
+MAX_CHECKS = 30  # candidates to check when no era filter is set
+MAX_CHECKS_WITH_ERA = 60  # a specific decade narrows matches a lot, so check more
+
 
 @st.cache_data(ttl=3300)
 def get_spotify_token():
@@ -28,7 +53,13 @@ def get_spotify_token():
     return response.json()["access_token"]
 
 
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_track_info(track_id, token):
+    """Look up a single track. Cached so that the same track isn't looked
+    up again for the rest of the hour — this is what actually keeps the
+    number of Spotify requests down, without depending on the multi-id
+    batch endpoint (which returned 403 for this app)."""
+
     response = requests.get(
         f"https://api.spotify.com/v1/tracks/{track_id}",
         headers={"Authorization": f"Bearer {token}"},
@@ -38,35 +69,50 @@ def get_track_info(track_id, token):
 
     response.raise_for_status()
 
-    data = response.json()
+    return response.json()
 
-    title = data["name"]
-    artist = ", ".join(artist["name"] for artist in data["artists"])
 
-    release_date = data["album"]["release_date"]
-    year = int(release_date[:4])
+@st.cache_resource
+def load_model():
+    model = XGBClassifier()
+    model.load_model(
+        os.path.join(BASE_DIR, "models", "xgboost_model.json")
+    )
+    return model
 
-    is_playable = data.get("is_playable", True)
 
-    return artist, title, year, is_playable
+feature_columns = [
+    "duration (ms)",
+    "danceability",
+    "energy",
+    "loudness",
+    "speechiness",
+    "acousticness",
+    "instrumentalness",
+    "liveness",
+    "valence",
+    "tempo"
+]
 
-def get_tracks_info(track_ids, token):
-    tracks = []
 
-    for track_id in track_ids:
-        response = requests.get(
-            f"https://api.spotify.com/v1/tracks/{track_id}",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"market": "SE"},
-            timeout=10
+@st.cache_data
+def load_data_with_predictions():
+    """Load the dataset and run model predictions once per app instance
+    instead of on every single Streamlit rerun (previously this ran on
+    every widget interaction, not just on submit)."""
+    df = pd.read_csv(
+        os.path.join(
+            BASE_DIR,
+            "data",
+            "raw",
+            "278k_labelled_uri.csv"
         )
+    )
 
-        if response.status_code == 200:
-            tracks.append(response.json())
-        else:
-            tracks.append(None)
+    df["predicted_label"] = load_model().predict(df[feature_columns])
 
-    return tracks
+    return df
+
 
 st.set_page_config(
     page_title="Moodify",
@@ -90,34 +136,7 @@ with title_col:
 
 st.write("Choose your mood and get Spotify recommendations.")
 
-df = pd.read_csv(
-    os.path.join(
-        BASE_DIR,
-        "data",
-        "raw",
-        "278k_labelled_uri.csv"
-    )
-)
-
-model = XGBClassifier()
-model.load_model(
-    os.path.join(BASE_DIR, "models", "xgboost_model.json")
-)
-
-feature_columns = [
-    "duration (ms)",
-    "danceability",
-    "energy",
-    "loudness",
-    "speechiness",
-    "acousticness",
-    "instrumentalness",
-    "liveness",
-    "valence",
-    "tempo"
-]
-
-df["predicted_label"] = model.predict(df[feature_columns])
+df = load_data_with_predictions()
 
 label_map = {
     "Melancholic": 0,
@@ -168,33 +187,51 @@ if submitted:
         (df["duration (ms)"] < 600000)
     ]
 
-    candidates = matching_songs.sample(
-        n=min(50, len(matching_songs))
-    )
+    year_range = era_map[era]
+    max_checks = MAX_CHECKS_WITH_ERA if year_range is not None else MAX_CHECKS
+
+    sample_size = min(len(matching_songs), max_checks)
+    candidates = matching_songs.sample(n=sample_size) if sample_size > 0 else matching_songs
+    candidate_ids = candidates["uri"].str.split(":").str[-1].tolist()
 
     valid_tracks = []
+    checked = 0
+    not_playable_count = 0
+    no_release_date_count = 0
+    year_mismatch_count = 0
+    rate_limited = False
+    retry_after_seconds = None
 
     try:
         token = get_spotify_token()
-        year_range = era_map[era]
 
-        track_ids = [
-            uri.split(":")[-1]
-            for uri in candidates["uri"]
-        ]
+        for track_id in candidate_ids:
+            if checked >= max_checks or len(valid_tracks) >= 5:
+                break
 
-        spotify_tracks = get_tracks_info(track_ids, token)
+            checked += 1
 
-        for (_, row), track in zip(candidates.iterrows(), spotify_tracks):
-            if track is None:
-                continue
+            try:
+                track = get_track_info(track_id, token)
+            except requests.HTTPError as track_err:
+                if track_err.response is not None and track_err.response.status_code == 429:
+                    retry_after_seconds = track_err.response.headers.get("Retry-After", "unknown")
+                    print(
+                        f"[moodify debug] rate limited after {checked} checks "
+                        f"(Retry-After: {retry_after_seconds}s), stopping early"
+                    )
+                    rate_limited = True
+                    break
+                raise
 
             if not track.get("is_playable", True):
+                not_playable_count += 1
                 continue
 
-            release_date = track["album"]["release_date"]
+            release_date = track.get("album", {}).get("release_date")
 
             if not release_date:
+                no_release_date_count += 1
                 continue
 
             year = int(release_date[:4])
@@ -203,26 +240,47 @@ if submitted:
                 start_year, end_year = year_range
 
                 if not start_year <= year <= end_year:
+                    year_mismatch_count += 1
                     continue
 
-            valid_tracks.append(row)
+            valid_tracks.append({
+                "track_id": track_id,
+                "artist": ", ".join(artist["name"] for artist in track["artists"]),
+                "title": track["name"]
+            })
 
-            if len(valid_tracks) == 5:
-                break
-
-        st.session_state.recommendations = pd.DataFrame(valid_tracks)
-
+        st.session_state.recommendations = valid_tracks
         st.session_state.recommended_mood = mood
+        st.session_state.debug_info = {
+            "checked": checked,
+            "not_playable": not_playable_count,
+            "no_release_date": no_release_date_count,
+            "year_mismatch": year_mismatch_count,
+            "rate_limited": rate_limited,
+            "retry_after_seconds": retry_after_seconds,
+            "valid_found": len(valid_tracks)
+        }
+
+        if rate_limited:
+            st.warning(
+                f"Spotify is temporarily limiting requests. We still found "
+                f"{len(valid_tracks)} track(s) before that happened — try "
+                f"again in about {retry_after_seconds} seconds for more."
+            )
 
     except requests.HTTPError as e:
-        if e.response.status_code == 429:
+        if e.response is not None and e.response.status_code == 429:
             retry_after = e.response.headers.get("Retry-After", "unknown")
             print(f"Spotify rate limit. Retry-After: {retry_after} seconds")
-            st.warning("Spotify is temporarily limiting requests. Please try again later.")
-        else:
-            st.error(
-                f"Spotify error {e.response.status_code}: {e.response.text}"
+            st.warning(
+                f"Spotify is temporarily limiting requests. Please try again "
+                f"in about {retry_after} seconds."
             )
+        else:
+            status = e.response.status_code if e.response is not None else "?"
+            body = e.response.text[:500] if e.response is not None else str(e)
+            print(f"[moodify debug] Spotify HTTP error {status}: {body}")
+            st.error(f"Spotify error {status}: {body}")
 
     except requests.RequestException:
         st.error("Could not connect to Spotify.")
@@ -234,121 +292,127 @@ if st.session_state.recommendations is not None:
         f"Songs for a {st.session_state.recommended_mood.lower()} mood"
     )
 
-    try:
-        token = get_spotify_token()
+    tracks = st.session_state.recommendations
 
-        tracks = []
-
-        # Get artist and song information for each recommendation
-        for i, (_, row) in enumerate(
-            st.session_state.recommendations.iterrows(),
-            start=1
-        ):
-            track_id = row["uri"].split(":")[-1]
-
-            try:
-                artist, title, year, is_playable = get_track_info(track_id, token)
-
-                tracks.append({
-                    "track_id": track_id,
-                    "artist": artist,
-                    "title": title
-                })
-
-            except requests.RequestException:
-                continue
-
-        # Create Spotify players
-        if tracks:
-            players_html = ""
-
-            for i, track in enumerate(tracks):
-                players_html += f"""
-                    <div style="margin-bottom: 10px;">
-                        <strong>
-                            {i + 1}. {track["artist"]} – {track["title"]}
-                        </strong>
-
-                        <div
-                            id="spotify-player-{i}"
-                            style="margin-top: 5px;">
-                        </div>
-                    </div>
-                """
-
-            player_data = ",".join(
-                f'"spotify:track:{track["track_id"]}"'
-                for track in tracks
+    # Note: no Spotify Web API calls happen below. Track names/artists were
+    # already captured during the search above, and the players themselves
+    # are loaded client-side by the visitor's browser via Spotify's embed
+    # widget — so just interacting with the page (without hitting
+    # "Recommend songs" again) no longer burns any of the app's API quota.
+    if len(tracks) > 0:
+        if len(tracks) < 5:
+            st.info(
+                f"Found {len(tracks)} matching track(s) for this mood/era "
+                "combination — narrower decades naturally have fewer "
+                "matches in the dataset. Try \"Any\" era for more results."
             )
 
-            html = f"""
-                <script
-                    src="https://open.spotify.com/embed/iframe-api/v1"
-                    async>
-                </script>
+        players_html = ""
 
-                {players_html}
+        for i, track in enumerate(tracks):
+            players_html += f"""
+                <div style="margin-bottom: 10px;">
+                    <strong>
+                        {i + 1}. {track["artist"]} – {track["title"]}
+                    </strong>
 
-                <script>
-                    const trackUris = [{player_data}];
-                    const controllers = [];
-
-                    window.onSpotifyIframeApiReady = (IFrameAPI) => {{
-
-                        trackUris.forEach((uri, index) => {{
-
-                            const element =
-                                document.getElementById(
-                                    `spotify-player-${{index}}`
-                                );
-
-                            const options = {{
-                                uri: uri,
-                                width: "100%",
-                                height: 80
-                            }};
-
-                            IFrameAPI.createController(
-                                element,
-                                options,
-                                (controller) => {{
-
-                                    controllers[index] = controller;
-
-                                    controller.addListener(
-                                        "playback_started",
-                                        () => {{
-
-                                            controllers.forEach(
-                                                (
-                                                    otherController,
-                                                    otherIndex
-                                                ) => {{
-
-                                                    if (
-                                                        otherController &&
-                                                        otherIndex !== index
-                                                    ) {{
-                                                        otherController.pause();
-                                                    }}
-                                                }}
-                                            );
-                                        }}
-                                    );
-                                }}
-                            );
-                        }});
-                    }};
-                </script>
+                    <div
+                        id="spotify-player-{i}"
+                        style="margin-top: 5px;">
+                    </div>
+                </div>
             """
 
-            components.html(
-                html,
-                height=len(tracks) * 115
-            )
+        player_data = ",".join(
+            f'"spotify:track:{track["track_id"]}"'
+            for track in tracks
+        )
 
+        html = f"""
+            <script
+                src="https://open.spotify.com/embed/iframe-api/v1"
+                async>
+            </script>
+
+            {players_html}
+
+            <script>
+                const trackUris = [{player_data}];
+                const controllers = [];
+
+                window.onSpotifyIframeApiReady = (IFrameAPI) => {{
+
+                    trackUris.forEach((uri, index) => {{
+
+                        const element =
+                            document.getElementById(
+                                `spotify-player-${{index}}`
+                            );
+
+                        const options = {{
+                            uri: uri,
+                            width: "100%",
+                            height: 80
+                        }};
+
+                        IFrameAPI.createController(
+                            element,
+                            options,
+                            (controller) => {{
+
+                                controllers[index] = controller;
+
+                                controller.addListener(
+                                    "playback_started",
+                                    () => {{
+
+                                        controllers.forEach(
+                                            (
+                                                otherController,
+                                                otherIndex
+                                            ) => {{
+
+                                                if (
+                                                    otherController &&
+                                                    otherIndex !== index
+                                                ) {{
+                                                    otherController.pause();
+                                                }}
+                                            }}
+                                        );
+                                    }}
+                                );
+                            }}
+                        );
+                    }});
+                }};
+            </script>
+        """
+
+        components.html(
+            html,
+            height=len(tracks) * 115
+        )
+
+    else:
+        debug_info = st.session_state.get("debug_info") or {}
+        checked_count = debug_info.get("checked", 0)
+        mismatch_count = debug_info.get("year_mismatch", 0)
+
+        if checked_count > 0 and mismatch_count / checked_count >= 0.8:
+            st.warning(
+                f"No {st.session_state.recommended_mood.lower()} tracks from "
+                f"the {era} era turned up — this dataset looks like it has "
+                "very few (or none) for that combination. Try a different "
+                "era, or \"Any\"."
+            )
         else:
             st.warning("No Spotify previews available.")
 
-    except requests.RequestException:
-        st.error("Could not connect to Spotify.")
+        if st.session_state.get("debug_info"):
+            with st.expander("Debug info (why no tracks were found)"):
+                st.json(st.session_state.debug_info)
+                st.caption(
+                    "Check the terminal running 'streamlit run' for full "
+                    "[moodify debug] log lines."
+                )
