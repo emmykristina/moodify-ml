@@ -155,6 +155,103 @@ era_map = {
     "2020s": (2020, 2029)
 }
 
+
+class SpotifyRateLimited(Exception):
+    """Raised (never cached) when Spotify returns 429 mid-search, so a
+    rate-limited moment never gets baked into the cached result below."""
+
+    def __init__(self, retry_after):
+        self.retry_after = retry_after
+        super().__init__(f"Spotify rate limited, retry after {retry_after}s")
+
+
+@st.cache_data(ttl=3600, show_spinner="Finding recommendations...")
+def find_recommendations(label, year_range):
+    """Find up to 5 recommended tracks for a given mood label + era, and
+    cache the whole result for an hour.
+
+    This is the main defense against rate limiting when the app is shared:
+    without it, every single click on "Recommend songs" — even for a mood/
+    era combo someone already searched a minute ago — would draw a fresh
+    random sample and re-check it against Spotify from scratch. With only
+    ~28 possible mood/era combinations total, caching the full result per
+    combination means Spotify only gets hit once per combination per hour,
+    no matter how many people click around in the meantime.
+    """
+    max_checks = MAX_CHECKS_WITH_ERA if year_range is not None else MAX_CHECKS
+
+    matching_songs = df[
+        (df["predicted_label"] == label) &
+        (df["speechiness"] < 0.66) &
+        (df["duration (ms)"] < 600000)
+    ]
+
+    sample_size = min(len(matching_songs), max_checks)
+    candidates = matching_songs.sample(n=sample_size) if sample_size > 0 else matching_songs
+    candidate_ids = candidates["uri"].str.split(":").str[-1].tolist()
+
+    token = get_spotify_token()
+
+    valid_tracks = []
+    checked = 0
+    not_playable_count = 0
+    no_release_date_count = 0
+    year_mismatch_count = 0
+
+    for track_id in candidate_ids:
+        if checked >= max_checks or len(valid_tracks) >= 5:
+            break
+
+        checked += 1
+
+        try:
+            track = get_track_info(track_id, token)
+        except requests.HTTPError as track_err:
+            if track_err.response is not None and track_err.response.status_code == 429:
+                retry_after = track_err.response.headers.get("Retry-After", "unknown")
+                print(
+                    f"[moodify debug] rate limited after {checked} checks "
+                    f"(Retry-After: {retry_after}s), stopping early"
+                )
+                raise SpotifyRateLimited(retry_after) from track_err
+            raise
+
+        if not track.get("is_playable", True):
+            not_playable_count += 1
+            continue
+
+        release_date = track.get("album", {}).get("release_date")
+
+        if not release_date:
+            no_release_date_count += 1
+            continue
+
+        year = int(release_date[:4])
+
+        if year_range is not None:
+            start_year, end_year = year_range
+
+            if not start_year <= year <= end_year:
+                year_mismatch_count += 1
+                continue
+
+        valid_tracks.append({
+            "track_id": track_id,
+            "artist": ", ".join(artist["name"] for artist in track["artists"]),
+            "title": track["name"]
+        })
+
+    debug_info = {
+        "checked": checked,
+        "not_playable": not_playable_count,
+        "no_release_date": no_release_date_count,
+        "year_mismatch": year_mismatch_count,
+        "valid_found": len(valid_tracks)
+    }
+
+    return valid_tracks, debug_info
+
+
 with st.form("mood_form"):
     mood = st.radio(
         "How are you feeling?",
@@ -180,107 +277,26 @@ if "recommended_mood" not in st.session_state:
 
 if submitted:
     label = label_map[mood]
-
-    matching_songs = df[
-        (df["predicted_label"] == label) &
-        (df["speechiness"] < 0.66) &
-        (df["duration (ms)"] < 600000)
-    ]
-
     year_range = era_map[era]
-    max_checks = MAX_CHECKS_WITH_ERA if year_range is not None else MAX_CHECKS
-
-    sample_size = min(len(matching_songs), max_checks)
-    candidates = matching_songs.sample(n=sample_size) if sample_size > 0 else matching_songs
-    candidate_ids = candidates["uri"].str.split(":").str[-1].tolist()
-
-    valid_tracks = []
-    checked = 0
-    not_playable_count = 0
-    no_release_date_count = 0
-    year_mismatch_count = 0
-    rate_limited = False
-    retry_after_seconds = None
 
     try:
-        token = get_spotify_token()
-
-        for track_id in candidate_ids:
-            if checked >= max_checks or len(valid_tracks) >= 5:
-                break
-
-            checked += 1
-
-            try:
-                track = get_track_info(track_id, token)
-            except requests.HTTPError as track_err:
-                if track_err.response is not None and track_err.response.status_code == 429:
-                    retry_after_seconds = track_err.response.headers.get("Retry-After", "unknown")
-                    print(
-                        f"[moodify debug] rate limited after {checked} checks "
-                        f"(Retry-After: {retry_after_seconds}s), stopping early"
-                    )
-                    rate_limited = True
-                    break
-                raise
-
-            if not track.get("is_playable", True):
-                not_playable_count += 1
-                continue
-
-            release_date = track.get("album", {}).get("release_date")
-
-            if not release_date:
-                no_release_date_count += 1
-                continue
-
-            year = int(release_date[:4])
-
-            if year_range is not None:
-                start_year, end_year = year_range
-
-                if not start_year <= year <= end_year:
-                    year_mismatch_count += 1
-                    continue
-
-            valid_tracks.append({
-                "track_id": track_id,
-                "artist": ", ".join(artist["name"] for artist in track["artists"]),
-                "title": track["name"]
-            })
+        valid_tracks, debug_info = find_recommendations(label, year_range)
 
         st.session_state.recommendations = valid_tracks
         st.session_state.recommended_mood = mood
-        st.session_state.debug_info = {
-            "checked": checked,
-            "not_playable": not_playable_count,
-            "no_release_date": no_release_date_count,
-            "year_mismatch": year_mismatch_count,
-            "rate_limited": rate_limited,
-            "retry_after_seconds": retry_after_seconds,
-            "valid_found": len(valid_tracks)
-        }
+        st.session_state.debug_info = debug_info
 
-        if rate_limited:
-            st.warning(
-                f"Spotify is temporarily limiting requests. We still found "
-                f"{len(valid_tracks)} track(s) before that happened — try "
-                f"again in about {retry_after_seconds} seconds for more."
-            )
+    except SpotifyRateLimited as e:
+        st.warning(
+            f"Spotify is temporarily limiting requests. Please try again "
+            f"in about {e.retry_after} seconds."
+        )
 
     except requests.HTTPError as e:
-        if e.response is not None and e.response.status_code == 429:
-            retry_after = e.response.headers.get("Retry-After", "unknown")
-            print(f"Spotify rate limit. Retry-After: {retry_after} seconds")
-            st.warning(
-                f"Spotify is temporarily limiting requests. Please try again "
-                f"in about {retry_after} seconds."
-            )
-        else:
-            status = e.response.status_code if e.response is not None else "?"
-            body = e.response.text[:500] if e.response is not None else str(e)
-            print(f"[moodify debug] Spotify HTTP error {status}: {body}")
-            st.error(f"Spotify error {status}: {body}")
+        status = e.response.status_code if e.response is not None else "?"
+        body = e.response.text[:500] if e.response is not None else str(e)
+        print(f"[moodify debug] Spotify HTTP error {status}: {body}")
+        st.error(f"Spotify error {status}: {body}")
 
     except requests.RequestException:
         st.error("Could not connect to Spotify.")
