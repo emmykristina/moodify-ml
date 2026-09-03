@@ -153,6 +153,19 @@ st.markdown(
         /* Bring the title a bit closer to the logo (default gap is 16px). */
         [data-testid="stHorizontalBlock"] {
             column-gap: 4px !important;
+            /* Without this, pinning the logo column to a fixed width above
+               makes the two columns' combined width exceed the container,
+               which wraps the title onto its own row below the logo. */
+            flex-wrap: nowrap !important;
+        }
+        /* Streamlit reserves ~96px above the content to clear its header
+           bar, which reads as a big empty gap on a short mobile screen.
+           The header is only 60px tall and sits absolutely positioned
+           (doesn't take up flow space), so 44px of padding here is the
+           exact amount needed to land the logo flush against it —
+           any less and the logo would be hidden behind the header. */
+        .block-container {
+            padding-top: 44px !important;
         }
         /* Force the subtitle onto two shorter lines instead of one long
            one that spans the whole width. */
