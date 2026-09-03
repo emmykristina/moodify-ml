@@ -6,6 +6,8 @@ The project compares unsupervised learning, traditional supervised machine learn
 
 The project also includes a small **Streamlit application** that recommends Spotify tracks based on a selected musical mood.
 
+**🎧 Try it live:** [moodify-ml.streamlit.app](https://moodify-ml.streamlit.app)
+
 ---
 
 ## Results
@@ -146,13 +148,31 @@ Select a musical mood and click **Recommend songs** to receive five Spotify reco
 
 ---
 
+## Deployment
+
+The app is deployed on [Streamlit Community Cloud](https://moodify-ml.streamlit.app), which rebuilds automatically on every push to `main`.
+
+Deployment uses `app/requirements.txt` (a lean subset of the root
+`requirements.txt`, without notebook-only dependencies like TensorFlow)
+and reads the Spotify credentials from Streamlit's secrets manager
+instead of a `.env` file. To deploy your own copy, add
+`SPOTIFY_CLIENT_ID` and `SPOTIFY_CLIENT_SECRET` under the app's
+"Secrets" settings — see `.streamlit/secrets.toml.example` for the
+format.
+
+---
+
 ## Project Structure
 
 ```text
 moodify-ml/
 │
+├── .streamlit/
+│   └── secrets.toml.example
+│
 ├── app/
-│   └── app.py
+│   ├── app.py
+│   └── requirements.txt
 │
 ├── assets/
 │   └── moodify_logo_transparent.png
