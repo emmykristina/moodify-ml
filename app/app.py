@@ -120,6 +120,24 @@ st.set_page_config(
     layout="centered"
 )
 
+# On narrow (mobile) screens, st.columns stacks vertically, so the logo
+# column becomes the full screen width instead of ~1/5 of it — without a
+# cap it ends up filling most of the screen. This only kicks in below the
+# mobile breakpoint, so the desktop layout (columns side by side) is
+# untouched.
+st.markdown(
+    """
+    <style>
+    @media (max-width: 640px) {
+        [data-testid="stImage"] img {
+            max-width: 110px !important;
+        }
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
 logo_col, title_col = st.columns(
     [1, 4],
     vertical_alignment="bottom"
