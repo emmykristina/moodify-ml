@@ -402,7 +402,7 @@ if st.session_state.recommendations is not None:
         for i, track in enumerate(tracks):
             players_html += f"""
                 <div style="margin-bottom: 10px;">
-                    <strong>
+                    <strong class="track-label">
                         {i + 1}. {track["artist"]} – {track["title"]}
                     </strong>
 
@@ -419,6 +419,21 @@ if st.session_state.recommendations is not None:
         )
 
         html = f"""
+            <style>
+            /* This component renders in its own iframe, so it needs its
+               own copy of the mobile breakpoint — the mobile CSS injected
+               into the main page above can't reach in here. On mobile,
+               hide the artist/title label above each player: it wraps to
+               two lines for long names on a narrow screen, which makes
+               that box taller than the others and produces uneven gaps
+               between previews. */
+            @media (max-width: 640px) {{
+                .track-label {{
+                    display: none;
+                }}
+            }}
+            </style>
+
             <script
                 src="https://open.spotify.com/embed/iframe-api/v1"
                 async>
