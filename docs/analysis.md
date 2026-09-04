@@ -8,7 +8,7 @@ For the complete implementation, code, visualizations, and model evaluations, se
 
 ## Dataset
 
-The original dataset contains approximately **278,000 tracks** represented by numerical audio features and classified into four emotion categories:
+The original dataset contains **277,938 tracks** represented by numerical audio features and classified into four emotion categories:
 
 | Label | Emotion |
 |---:|---|
@@ -32,11 +32,25 @@ The analyzed audio features are:
 
 The dataset contained no missing values.
 
-After removing **1,678 duplicate rows**, approximately **276,000 tracks** remained.
+After removing **1,678 duplicate rows**, **276,260 tracks** remained.
 
-The undocumented feature `spec_rate` was excluded because its meaning could not be reliably determined.
+The feature `spec_rate` was excluded because its meaning had not been established at the time of analysis. Its definition was subsequently found in the original project code; see Section 2.
 
 The classes are moderately imbalanced, with Happy as the largest class and Calm as the smallest.
+
+---
+
+## Label Origin and Interpretation
+
+The source is the [278k Emotion Labeled Spotify Songs dataset on Kaggle](https://www.kaggle.com/datasets/abdullahorzan/moodify-dataset). The four labels were already present and were used as targets in this project.
+
+The [original Moodify project](https://github.com/orzanai/Moodify#dataset) describes a smaller training dataset assembled from mood-related Spotify playlists and user-curated selections, drawing on the principle of “Wisdom of Crowds” and Robert Thayer’s mood model. This provides an indirect basis in human music selection, rather than independent listener ratings of every track in the larger dataset.
+
+The [original training code](https://github.com/orzanai/Moodify/blob/main/main.py) reads `1200_song_mapped.csv` and trains a LightGBM classifier on numerical audio features. Kaggle describes the larger dataset as emotion-labeled by the original Moodify app. Together, these sources strongly suggest that the larger dataset's labels were generated using that classifier. However, the exact export process used to label all tracks has not been independently verified.
+
+**Implication:** The models evaluated here may primarily learn to reproduce the original classifier's decisions. Test accuracy measures agreement with the supplied labels, not independently established accuracy in recognizing human-perceived emotion.
+
+This provenance investigation was completed after the project presentation. It changes the interpretation of the results, not the recorded experiment scores.
 
 ---
 
@@ -66,7 +80,7 @@ The main preparation steps were:
 
 - Removing unnecessary index columns
 - Removing 1,678 duplicate rows
-- Removing the undocumented `spec_rate` feature
+- Removing `spec_rate`, whose definition had not been found at the time
 - Investigating extreme track durations
 - Separating features and target labels
 - Creating a stratified 80/20 train-test split
@@ -76,7 +90,20 @@ Tracks longer than 10 minutes were investigated rather than automatically remove
 
 They were therefore retained for the machine learning analysis.
 
-The final modeling dataset contains approximately **276,000 tracks and 10 audio features**.
+The final modeling dataset contains **276,260 tracks and 10 audio features**.
+
+### Follow-up: `spec_rate`
+
+The [original project code](https://github.com/orzanai/Moodify/blob/main/main.py) defines this engineered feature as:
+
+```python
+spec_rate = speechiness / duration_ms
+```
+
+Here, `duration_ms` refers to the dataset column `duration (ms)`. The feature is a ratio of the speechiness score to track duration in milliseconds; it is not a measured speaking rate such as words per second.
+
+The decision to exclude it was made before this definition was found. It should therefore not be described as entirely undocumented or inherently invalid. The reported models use the remaining ten features. Whether adding this ratio improves performance has not been tested and would require a controlled comparison using training/validation data.
+
 
 ---
 
@@ -146,13 +173,13 @@ For example, one cluster contained a relatively large proportion of Calm tracks,
 
 However, the clusters did not reproduce the four emotion categories clearly.
 
-This suggests that the audio features contain meaningful structure, but the predefined emotion labels cannot be recovered through simple clustering alone.
+This suggests that the audio features contain meaningful structure, but the tested K-Means configuration did not clearly recover the predefined emotion labels.
 
 ---
 
 ## 5. Supervised Machine Learning
 
-Four supervised approaches were evaluated, including a simple baseline.
+Four supervised approaches were evaluated, including a simple baseline. All scores below measure agreement with the existing dataset labels on the held-out test split.
 
 | Model | Test Accuracy |
 |---|---:|
@@ -199,7 +226,7 @@ The most important features according to the Random Forest model included:
 - Danceability
 - Loudness
 
-Feature importance describes how much features were used by the model when making splits. It should not be interpreted as causality, and correlated features may share importance.
+The reported Random Forest importance is based on the reduction in impurity contributed by each feature across the trees. It should not be interpreted as causality, and correlated features may share importance.
 
 Energetic remained the most difficult class, although its classification improved substantially compared with Logistic Regression.
 
@@ -304,44 +331,51 @@ The main findings from the project are:
 
 ---
 
+## Streamlit Application
+
+The application loads the trained XGBoost model and predicts a class from each track's ten audio features. Tracks matching the selected predicted class become recommendation candidates. Spotify is used to retrieve track metadata and provide embedded playback.
+
+The interface uses Melancholic for Sad and Upbeat for Happy, while Energetic and Calm retain their original names. These are display names for the same four classes, not newly trained targets.
+
+The app only includes tracks with `speechiness < 0.66` and `duration (ms) < 600000`. These filters exclude high-speechiness tracks and tracks lasting ten minutes or longer from recommendations. They do not remove those tracks from the modeling dataset or change the reported model scores.
+
+---
+
 ## Limitations
 
-An important limitation concerns what the emotion labels actually represent.
+### Dataset Labels and Evaluation
 
-The models use numerical audio characteristics but do not consider:
+Available sources strongly suggest that the larger dataset contains model-generated labels. A model trained and tested against these labels may reproduce the original classifier's patterns and mistakes. The reported **96.40% accuracy** therefore measures agreement with the dataset's labels, not agreement with independent listener judgments.
 
-- Lyrics
-- Lyrical meaning
-- Musical context
-- Individual listener interpretation
+The use of model-generated labels may help explain the high agreement, but its contribution has not been measured. The exact label export process remains unverified.
 
-This is particularly important for the labels **Happy** and **Sad**.
+The test split contains tracks withheld from this project's training process, but this does not make their labels independent human assessments. In addition, several models were compared using the same test set. Future tuning should use validation data or cross-validation, reserving a final independent test set for evaluation.
 
-For example, a track may contain low energy, low tempo, or other characteristics associated with the Sad category without actually having sad lyrics or being perceived as emotionally sad by a listener.
+### Audio Features and Subjective Categories
 
-The labels should therefore primarily be interpreted as **musical characteristics associated with an emotion**, rather than a complete representation of the emotional meaning of a song.
+The models do not analyze lyrics, personal associations, or listening context. A track labeled Happy may have sad lyrics, and a track labeled Calm may not feel calm to every listener. This limitation applies to all four categories.
 
-This limitation is less pronounced for categories such as Energetic and Calm, which have a more direct relationship with measurable audio characteristics.
+Four mutually exclusive classes simplify music's emotional character. A track can express multiple emotions, and disagreement between listeners does not automatically mean that one judgment is wrong.
+
+EDA and statistical tests describe relationships with the supplied labels. They do not independently validate those labels as measures of human emotion.
+
+### Listening Observations
+
+During earlier testing of the app, some categories did not match my listening experience. These observations motivated further investigation, but were not a controlled listener evaluation of the XGBoost-based version. No independent listener-rated evaluation has yet been reported.
 
 ---
 
 ## Future Development
 
-Possible future improvements include:
+The priority is to evaluate whether recommendations match listener judgments before optimizing agreement with the existing labels further.
 
-- Hyperparameter tuning
-- More detailed model comparison
-- Combining audio features with song lyrics
-- Improving the definition of subjective emotion categories
-- Exploring additional audio information
-- Personalized recommendations
-- Further development of the Streamlit application
-- Using raw or time-segmented audio data
-- Exploring temporal models such as TCNs
+1. **Create a separate listener-rated evaluation set.** Start with a small set of tracks assessed by several people without showing model predictions or dataset labels. Allow uncertainty and multiple emotions, and record disagreement. Ratings of energy and emotional positivity could complement the four categories.
+2. **Evaluate the current XGBoost model against those judgments.** Examine results per class and distinguish consistent model errors from subjective disagreement.
+3. **Collect separate human-labeled development data.** Use it for training and validation while keeping the listener-rated test set out of model selection and training.
+4. **Test additional information.** Lyrics and genre may improve agreement with listeners, but this should be demonstrated rather than assumed. Compare audio-only and expanded models under the same evaluation conditions.
+5. **Tune and improve delivery.** Use validation data or cross-validation for hyperparameter tuning and feature comparisons, including a possible `spec_rate` experiment. Improve app caching and handling of Spotify request limits.
 
-Combining **audio characteristics with lyrical information** would be particularly valuable for categories such as Happy and Sad, where audio features alone cannot fully represent the emotional meaning of a song.
-
-Temporal models such as TCNs would require raw or time-segmented audio data rather than the aggregated tabular features used in the current project.
+Temporal models such as TCNs would require raw or time-segmented audio data rather than the aggregated tabular features used in the current project. They are a possible later extension, not a substitute for establishing suitable labels and evaluation criteria.
 
 ---
 
@@ -357,4 +391,4 @@ The ANN achieved 90.02%, demonstrating that deep learning can successfully learn
 
 Finally, the project highlights an important distinction between predicting a predefined emotion label from audio characteristics and understanding the full emotional meaning of music.
 
-The results therefore demonstrate both the potential and the limitations of machine learning for music emotion classification.
+Given the likely model-generated labels, the strongest supported conclusion is that XGBoost reproduced the dataset’s categorization more accurately than the other evaluated models. Whether it provides emotionally appropriate recommendations for listeners remains to be tested independently.
